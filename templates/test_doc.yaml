@@ -1,0 +1,40 @@
+description: Start EC2 Instance
+schemaVersion: '0.3'
+assumeRole: '{{ AutomationAssumeRole }}'
+parameters:
+  AutomationAssumeRole:
+    default: '{{ AutomationAssumeRole }}'
+    type: String
+    description: The ARN of the role that allows Automation to perform the actions on your behalf.
+  InstanceProfile:
+    type: String
+    description: The name of the IAM instance profile to assign to the instance.
+    default: '{{ instance_profile }}'
+  SubnetId:
+    type: String
+    description: The ID of the subnet where the instance will be launched.
+    default: '{{ subnet_id }}'
+  SecurityGroupIds:
+    type: StringList
+    description: The IDs of the security groups to associate with the instance.
+    default: 
+      - '{{ security_group_ids }}'
+  TargetASG:
+    type: String
+    description: The name of the Auto Scaling group.
+    default: '{{ target_asg }}'
+  SourceAMI:
+    type: String
+    description: The ID of the AMI to use for the instance.
+    default: '{{ source_ami }}'
+mainSteps:
+  - name: StartInstance
+    action: 'aws:runInstances'
+    inputs:
+      ImageId: '{{ SourceAMI }}'
+      InstanceType: m5.large
+      MinInstanceCount: 1
+      MaxInstanceCount: 1
+      IamInstanceProfileName: '{{ InstanceProfile }}'
+      SubnetId: '{{ SubnetId }}'
+      SecurityGroupIds: '{{ SecurityGroupIds }}'

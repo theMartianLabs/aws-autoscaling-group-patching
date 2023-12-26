@@ -1,0 +1,328 @@
+description: Systems Manager Automation Demo - Patch AMI and Update ASG
+schemaVersion: '0.3'
+assumeRole: '{{ AutomationAssumeRole }}'
+outputs:
+  - createImage.ImageId
+parameters:
+  AutomationAssumeRole:
+    default: '{{ AutomationAssumeRole }}'
+    type: String
+    description: The ARN of the role that allows Automation to perform the actions on your behalf.
+  InstanceProfile:
+    type: String
+    description: The name of the IAM instance profile to assign to the instance.
+    default: '{{ instance_profile }}'
+  SubnetId:
+    type: String
+    description: The ID of the subnet where the instance will be launched.
+    default: '{{ subnet_id }}'
+  SecurityGroupIds:
+    type: StringList
+    description: The IDs of the security groups to associate with the instance.
+    default: 
+      - '{{ security_group_ids }}'
+  TargetASG:
+    type: String
+    description: The name of the Auto Scaling group.
+    default: '{{ target_asg }}'
+  SourceAMI:
+    type: String
+    description: The ID of the AMI to use for the instance.
+    default: '{{ source_ami }}'
+  NewAMI:
+    type: String
+    description: (Optional) The name of of newly patched AMI.
+    default: 'patchedAMI-{{global:DATE_TIME}}'
+  SnapshotId:
+    type: String
+    description: (Optional) The snapshot ID to use to retrieve a patch baseline snapshot.
+    default: ''
+  RebootOption:
+    type: String
+    description: '(Optional) Reboot behavior after a patch Install operation. If you choose NoReboot and patches are installed, the instance is marked as non-compliant until a subsequent reboot and scan.'
+    allowedValues:
+      - NoReboot
+      - RebootIfNeeded
+    default: RebootIfNeeded
+  Operation:
+    type: String
+    description: (Optional) The update or configuration to perform on the instance. The system checks if patches specified in the patch baseline are installed on the instance. The install operation installs patches missing from the baseline.
+    allowedValues:
+      - Install
+      - Scan
+    default: Install
+mainSteps:
+  - name: startInstances
+    action: 'aws:runInstances'
+    timeoutSeconds: 1200
+    maxAttempts: 1
+    onFailure: Abort
+    inputs:
+      ImageId: '{{ SourceAMI }}'
+      InstanceType: m5.large
+      MinInstanceCount: 1
+      MaxInstanceCount: 1
+      IamInstanceProfileName: '{{ InstanceProfile }}'
+      SubnetId: '{{ SubnetId }}'
+      SecurityGroupIds: '{{ SecurityGroupIds }}'
+  - name: verifyInstanceManaged
+    action: 'aws:waitForAwsResourceProperty'
+    timeoutSeconds: 600
+    inputs:
+      Service: ssm
+      Api: DescribeInstanceInformation
+      InstanceInformationFilterList:
+        - key: InstanceIds
+          valueSet:
+            - '{{ startInstances.InstanceIds }}'
+      PropertySelector: '$.InstanceInformationList[0].PingStatus'
+      DesiredValues:
+        - Online
+    onFailure: 'step:terminateInstance'
+  - name: installPatches
+    action: 'aws:runCommand'
+    timeoutSeconds: 7200
+    onFailure: Abort
+    inputs:
+      DocumentName: AWS-RunPatchBaseline
+      Parameters:
+        SnapshotId: '{{SnapshotId}}'
+        RebootOption: '{{RebootOption}}'
+        Operation: '{{Operation}}'
+      InstanceIds:
+        - '{{ startInstances.InstanceIds }}'
+  - name: stopInstance
+    action: 'aws:changeInstanceState'
+    maxAttempts: 1
+    onFailure: Continue
+    inputs:
+      InstanceIds:
+        - '{{ startInstances.InstanceIds }}'
+      DesiredState: stopped
+  - name: createImage
+    action: 'aws:createImage'
+    maxAttempts: 1
+    onFailure: Continue
+    inputs:
+      InstanceId: '{{ startInstances.InstanceIds }}'
+      ImageName: '{{ NewAMI }}'
+      NoReboot: false
+      ImageDescription: Patched AMI created by Automation
+  - name: createTags
+    action: 'aws:createTags'
+    maxAttempts: 3
+    onFailure: Continue
+    inputs:
+      ResourceType: EC2
+      ResourceIds:
+        - '{{ createImage.ImageId }}'
+      Tags:
+        - Key: Version
+          Value: NewAMI
+        - Key: Environment
+          Value: Dev
+        - Key: Owner
+          Value: Synthesis
+  - name: terminateInstance
+    action: 'aws:changeInstanceState'
+    maxAttempts: 1
+    onFailure: Continue
+    inputs:
+      InstanceIds:
+        - '{{ startInstances.InstanceIds }}'
+      DesiredState: terminated
+  - name: updateASG
+    action: 'aws:executeScript'
+    timeoutSeconds: 300
+    maxAttempts: 1
+    onFailure: Abort
+    inputs:
+      Runtime: python3.8
+      Handler: update_asg
+      InputPayload:
+        TargetASG: '{{TargetASG}}'
+        NewAMI: '{{createImage.ImageId}}'
+      Script: |-
+         from __future__ import print_function
+        import datetime
+        import json
+        import time
+        import boto3
+
+        # create auto scaling and ec2 client
+        asg = boto3.client('autoscaling')
+        ec2 = boto3.client('ec2')
+
+        # Global variables
+        tag_key = "Version"
+
+
+        def pause_execution(minutes):
+            # Convert minutes to seconds
+            seconds = minutes * 60
+            time.sleep(seconds)
+
+            return seconds
+
+
+        def get_launch_template_details(lt_name):
+            response = ec2.describe_launch_template_versions(
+                LaunchTemplateName=lt_name
+            )
+
+            lt_versions = response['LaunchTemplateVersions']
+            return lt_versions
+          
+            
+        def delete_ami(tag_name, tag_value):
+            ami = search_ami(tag_name, tag_value)
+            if len(ami['Images']) == 0:
+                print(f"No AMI found with {tag_name} = {tag_value}")
+            else:
+                for image in ami['Images']:
+                    image_id = image['ImageId']
+                    ec2.deregister_image(ImageId=image_id)
+                    print(f"Deleted AMI with ID: {image_id}")
+
+
+        def search_ami(tag_name, tag_value):
+            try:
+                all_ami_ids = ec2.describe_images(
+                    Filters=[
+                        {
+                            'Name': 'tag-key',
+                            'Values': [tag_name]
+                        },
+                        {
+                            'Name': "tag-value",
+                            'Values': [tag_value]
+                        }
+                    ]
+                )
+
+                ami_id_found = all_ami_ids
+                return ami_id_found
+
+            except Exception as e:
+                print(f" {str(e)}")
+
+
+        def update_ami_tag(image_details, desired_tag_value):
+            ami_id = image_details['Images'][0]['ImageId']  # assuming there's only one match
+            current_tags = image_details['Images'][0]['Tags']
+
+            # *********** CAN USE THE VALUE OF THE LAUNCH TEMPLATE HERE i.e v{launch_template_version}
+            # get_launch_template_details(launch_template_name)[0]['VersionNumber']
+            updated_tags = [{'Key': tag_key, 'Value': desired_tag_value}]
+            for tag in current_tags:
+                if tag['Key'] != tag_key:
+                    updated_tags.append(tag)
+
+            ec2.create_tags(Resources=[ami_id], Tags=updated_tags)
+            print(f"Updated AMI: {ami_id} with tag: ' {tag_key} : {desired_tag_value} '")
+
+
+        def update_launch_template(lt_name, new_version):
+            ec2.modify_launch_template(
+                LaunchTemplateName=lt_name,
+                DefaultVersion=str(new_version)
+            )
+            print(f"This launch template: {lt_name} has been updated to use version: {new_version}")
+
+
+        def update_refresh_asg(lt_name, asg_name, new_version):
+            autoscaling_client.update_auto_scaling_group(
+                AutoScalingGroupName=asg_name,
+                LaunchTemplate={
+                    'LaunchTemplateName': lt_name,
+                    'Version': str(new_version)
+                }
+            )
+            # Start instance refresh on Auto Scaling Group
+            autoscaling_client.start_instance_refresh(
+                AutoScalingGroupName=asg_name,
+                Strategy='Rolling',
+                Preferences={
+                    'InstanceWarmup': 300,
+                    'MinHealthyPercentage': 50
+                }
+            )
+
+            print(f"This {asg_name} autoscaling group has been update to use launch template version: {new_version}")
+
+        
+        def create_launch_template_version(lt_ami_id, lt_name, current_ami_tag_value):
+            version_description = f'My Launch Template'
+
+            launch_template_versions = get_launch_template_details(lt_name)
+            instance_type = launch_template_versions[0]['LaunchTemplateData']['InstanceType']
+            iam_instance_profile = launch_template_versions[0]['LaunchTemplateData']['IamInstanceProfile']['Arn']
+            key_name = launch_template_versions[0]['LaunchTemplateData']['KeyName']
+            security_groups = launch_template_versions[0]['LaunchTemplateData']['SecurityGroupIds']
+            print(key_name)
+
+            try:
+                response = ec2.create_launch_template_version(
+                    LaunchTemplateName=lt_name,
+                    SourceVersion='$Latest',
+                    VersionDescription=version_description,
+                    LaunchTemplateData={
+                        'ImageId': lt_ami_id,
+                        'InstanceType': instance_type,
+                        'IamInstanceProfile': {
+                            'Arn': iam_instance_profile
+                        },
+                        'KeyName': key_name,
+                        'SecurityGroupIds': security_groups
+                    }
+                )
+                new_lt_version = response['LaunchTemplateVersion']['VersionNumber']
+                previuos_lt_version = (new_lt_version - 1)
+
+                # Update previous 'Latest' to be older version
+                image_details = search_ami(tag_key, 'Latest')
+                if len(image_details['Images']) == 0:
+                    print(f"No AMI found with Version = 'Latest'")
+                else:
+                    update_ami_tag(image_details, str(previuos_lt_version))
+
+                # Update the AMI currently used in LT (or newly created AMI) Version to 'Latest'
+                image_details = search_ami(tag_key, current_ami_tag_value)
+                if len(image_details['Images']) == 0:
+                    print(f"No AMI found with Version = {current_ami_tag_value}")
+                else:
+                    update_ami_tag(image_details, 'Latest')
+
+                update_launch_template(lt_name, new_lt_version)
+                update_refresh_asg(lt_name, new_lt_version)
+
+                # notifications: ses, sns
+
+            except Exception as e:
+                print(f" {str(e)}")
+                
+            return new_lt_version
+
+
+        def update_asg(event, context):
+            print("Received event: " + json.dumps(event, indent=2))
+
+            target_asg = event['TargetASG']
+            new_ami = event['NewAMI']
+
+            # get object for the ASG we're going to update, filter by name of target ASG
+            asg_query = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[target_asg])
+            if 'AutoScalingGroups' not in asg_query or not asg_query['AutoScalingGroups']:
+                return 'No ASG found matching the value you specified.'
+
+            else:
+                all_asg = asg_query["AutoScalingGroups"]
+
+                # create new launch template version using details returned from instance in the ASG and specify the newly patched AMI
+                time_stamp = time.time()
+
+                
+                launch_template_name = asg_query['AutoScalingGroups'][0]['LaunchTemplate']['LaunchTemplateName']
+                new_version = create_launch_template_version(new_ami, launch_template_name, 'NewAMI')
+                
+                return f'Updated ASG {target_asg} to use launch template version: {new_version} which uses AMI {new_ami}.'

@@ -1,0 +1,70 @@
+{
+    "Version": "2008-10-17",
+    "Statement": [
+        {
+            "Sid": "__default_statement_ID",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "*"
+            },
+            "Action": [
+                "SNS:GetTopicAttributes",
+                "SNS:SetTopicAttributes",
+                "SNS:AddPermission",
+                "SNS:RemovePermission",
+                "SNS:DeleteTopic",
+                "SNS:Subscribe",
+                "SNS:ListSubscriptionsByTopic",
+                "SNS:Publish",
+                "SNS:Receive"
+            ],
+            "Resource": "arn:aws:sns:${region}:${audit_account_id}:${sns_name}",
+            "Condition": {
+                "StringEquals": {
+                    "AWS:SourceOwner": "${audit_account_id}"
+                }
+            }
+        },
+        {
+            "Sid": "AWSSNSPolicy",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "*"
+            },
+            "Action": "sns:Publish",
+            "Resource": "arn:aws:sns:${region}:${audit_account_id}:${sns_name}"
+        },
+        {
+            "Sid": "AWSSNSPolicyCloudWatch",
+            "Effect": "Allow",
+            "Principal": {
+                "Service": ["cloudwatch.amazonaws.com"]
+            },
+            "Action": "sns:Publish",
+            "Resource": "arn:aws:sns:${region}:${audit_account_id}:${sns_name}"            
+        },
+        {
+            "Sid": "AWSSNSPolicyAccount",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "*"
+            },
+            "Action": "sns:Publish",
+            "Resource": "arn:aws:sns:${region}:${audit_account_id}:${sns_name}",
+            "Condition": {
+                "StringEquals": {
+                    "AWS:SourceOwner": "${source_account_id}"
+                }
+            }
+        },
+        {
+            "Sid": "AllowSecurityHub",
+            "Effect": "Allow",
+            "Principal": {
+                 "Service": "securityhub.amazonaws.com"
+            },
+            "Action": "SNS:ListSubscriptionsByTopic",
+            "Resource": "arn:aws:sns:${region}:${audit_account_id}:${sns_name}"
+        }  
+    ]
+}

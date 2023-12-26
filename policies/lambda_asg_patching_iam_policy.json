@@ -1,0 +1,47 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [    
+    {
+      "Sid": "CreateCloudWatchLambdaLogGroup",
+      "Effect": "Allow",
+      "Action": "logs:CreateLogGroup", 
+      "Resource":   "arn:aws:logs:${region}:${account_id}:*"
+      
+    },{
+      "Sid": "AllowLambdaAccessCloudWatchLogGroup",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:logs:${region}:${account_id}:log-group:${log_group_name}:*"
+      ]
+    },
+    {
+      "Sid": "AllowLambdaVPCandSSM",
+      "Effect": "Allow",
+      "Action": [ 
+        "iam:PassRole",  
+        "ec2:CreateNetworkInterface",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DeleteNetworkInterface",
+        "ssm:DescribeDocument",
+        "ssm:GetAutomationExecution",
+        "ssm:DescribeAutomationExecutions",
+        "ssm:DescribeAutomationStepExecutions",
+        "ssm:GetDocument",
+        "ssm:GetMaintenanceWindow",
+        "ssm:ListDocuments",
+        "ssm:ListDocumentMetadataHistory",
+        "ssm:ListDocumentVersions",
+        "ssm:GetMaintenanceWindow",
+        "ssm:StartAutomationExecution",
+        "ssm:SendAutomationSignal",
+        "ssm:StopAutomationExecution",
+        "ssm:UpdateDocument"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
